@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Flood Prediction System</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    #map { height: 300px; margin-top: 20px; }
+    #channelCanvas { border: 1px solid #ccc; margin-top: 20px; background: #f9f9f9; }
+    .safe { color: green; }
+    .alert { color: orange; }
+    .risk { color: red; }
+    .hidden { display: none; }
+  </style>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+</head>
+<body>
+  <h2>🌊 Flood Prediction System</h2>
+  
+  <form id="floodForm">
+    <label>Channel Type:
+      <select id="type" required>
+        <option value="">-- Select --</option>
+        <option value="1">Rectangular</option>
+        <option value="2">Trapezoidal</option>
+      </select>
+    </label><br><br>
+
+    <div id="rectangularInputs" class="hidden">
+      <label>Width (m): <input type="number" step="0.1" id="rectWidth"></label><br><br>
+      <label>Height (m): <input type="number" step="0.1" id="rectHeight"></label><br><br>
+      <label>Freeboard (m): <input type="number" step="0.1" id="rectFree"></label><br><br>
+    </div>
+
+    <div id="trapezoidalInputs" class="hidden">
+      <label>Bottom Width (m): <input type="number" step="0.1" id="trapWidth"></label><br><br>
+      <label>Height (m): <input type="number" step="0.1" id="trapHeight"></label><br><br>
+      <label>Side Slope (z): <input type="number" step="0.1" id="trapSlope"></label><br><br>
+      <label>Freeboard (m): <input type="number" step="0.1" id="trapFree"></label><br><br>
+    </div>
+
+    <label>Manning's n: <input type="number" step="0.001" id="n" required></label><br><br>
+    <label>Channel Slope (s0): <input type="number" step="0.0001" id="s0" required></label><br><br>
+    <label>Catchment Area (ha): <input type="number" step="0.01" id="area" required></label><br><br>
+    <label>Runoff Coefficient (c): <input type="number" step="0.01" id="c" required></label><br><br>
+
+    <button type="submit">Calculate Flood Risk</button>
+  </form>
+
+  <h3 id="status"></h3>
+  <canvas id="channelCanvas" width="500" height="300"></canvas>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    const lat = 1.5584, lon = 103.6386;
+    const canvas = document.getElementById("channelCanvas");
+    const ctx = canvas.getContext("2d");
+
+    document.getElementById('type').addEventListener('change', function () {
+      const type = parseInt(this.value);
+      document.getElementById('rectangularInputs').classList.toggle('hidden', type !== 1);
+      document.getElementById('trapezoidalInputs').classList.toggle('hidden', type !== 2);
+    });
+
+    document.getElementById('floodForm').addEventListener('submit', async function (e) {
+      e.preventDefault();
+
+      const type = parseInt(document.getElementById('type').value);
+      const n = parseFloat(document.getElementById('n').value);
+      const s0 = parseFloat(document.getElementById('s0').value);
+      const area = parseFloat(document.getElementById('area').value);
+      const c = parseFloat(document.getElementById('c').value);
+
+      // Fetch rainfall data
+      const apiKey = '229b07e2b5d243bb80283842251405';
+      const city = 'Johor Bahru';
+      let rainfall = 0;
+
+      try {
+        const res = await fetch(`https://api.weatherapi.com/v1/current.json?key=${apiKey}&q=${city}`);
+        const data = await res.json();
+        rainfall = data.current.precip_mm;
+      } catch {
+        alert("Error fetching weather data.");
+        return;
+      }
+
+      const q = c * area * rainfall;
+      let Q = 0, ratio = 0;
+      let statusText = '', className = '';
+
+      // Clear canvas
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const scale = 40;
+      const baseX = canvas.width / 2;
+      const baseY = canvas.height - 20;
+
+      if (type === 1) {
+        const w = parseFloat(document.getElementById('rectWidth').value);
+        const h = parseFloat(document.getElementById('rectHeight').value);
+        const f = parseFloat(document.getElementById('rectFree').value);
+
+        const A = w * h;
+        const P = w + 2 * h;
+        const R = A / P;
+        Q = (1 / n) * A * Math.pow(R, 2 / 3) * Math.sqrt(s0);
+        ratio = q / Q;
+
+        // Draw outer wall
+        ctx.fillStyle = "#ccc";
+        ctx.fillRect(baseX - (w * scale) / 2, baseY - (h + f) * scale, w * scale, (h + f) * scale);
+
+        // Draw water
+        ctx.fillStyle = "cyan";
+        ctx.fillRect(baseX - (w * scale) / 2, baseY - h * scale, w * scale, h * scale);
+
+        ctx.strokeText("Rectangular Channel", 10, 20);
+
+      } else if (type === 2) {
+        // === Trapezoidal Channel Drawing ===
+const w = parseFloat(document.getElementById('trapWidth').value);
+const h = parseFloat(document.getElementById('trapHeight').value);
+const z = parseFloat(document.getElementById('trapSlope').value);
+const f = parseFloat(document.getElementById('trapFree').value);
+
+const A = w * h + h * h * z;
+const P = w + 2 * h * Math.sqrt(1 + z * z);
+const R = A / P;
+Q = (1 / n) * A * Math.pow(R, 2 / 3) * Math.sqrt(s0);
+ratio = q / Q;
+
+const canvasWidth = canvas.width;
+const canvasHeight = canvas.height;
+
+const scaleX = canvasWidth / (w + 2 * z * (h + f)); // scale to fit width
+const scaleY = canvasHeight / (h + f);              // scale to fit height
+const scale = Math.min(scaleX, scaleY);             // uniform scaling
+
+const offsetX = canvasWidth / 2;
+const baseY = canvasHeight - 20; // leave margin below
+
+// Top width of channel wall and water
+const topWall = w + 2 * z * (h + f);
+const topWater = w + 2 * z * h;
+
+// Convert to screen coordinates
+const getX = dx => offsetX + dx * scale;
+const getY = dy => baseY - dy * scale;
+
+// Outer wall (gray)
+ctx.beginPath();
+ctx.moveTo(getX(-topWall / 2), getY(h + f));
+ctx.lineTo(getX(-w / 2), getY(0));
+ctx.lineTo(getX(w / 2), getY(0));
+ctx.lineTo(getX(topWall / 2), getY(h + f));
+ctx.closePath();
+ctx.fillStyle = "#ccc";
+ctx.fill();
+
+// Water (magenta)
+ctx.beginPath();
+ctx.moveTo(getX(-topWater / 2), getY(h));
+ctx.lineTo(getX(-w / 2), getY(0));
+ctx.lineTo(getX(w / 2), getY(0));
+ctx.lineTo(getX(topWater / 2), getY(h));
+ctx.closePath();
+ctx.fillStyle = "magenta";
+ctx.fill();
+
+// Axis label (optional text)
+ctx.fillStyle = "black";
+ctx.font = "14px sans-serif";
+ctx.fillText("Trapezoidal Channel Cross-Section with Freeboard", 10, 20);
+
+      }
+
+      // Flood status
+      if (ratio < 0.7) {
+        statusText = "✅ Safe";
+        className = "safe";
+      } else if (ratio <= 1) {
+        statusText = "⚠️ Alert";
+        className = "alert";
+      } else {
+        statusText = "🚨 Flood Risk";
+        className = "risk";
+        alert("🚨 Warning: High flood risk detected!");
+      }
+
+      document.getElementById('status').textContent = `Flood Status: ${statusText}`;
+      document.getElementById('status').className = className;
+
+      // Map
+      const map = L.map('map').setView([lat, lon], 16);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+      L.circleMarker([lat, lon], {
+        color: className === 'safe' ? 'green' : className === 'alert' ? 'orange' : 'red',
+        radius: 10
+      }).addTo(map).bindPopup(`Status: ${statusText}`).openPopup();
+    });
+  </script>
+</body>
+</html>
