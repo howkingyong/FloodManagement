@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Flood Prediction System</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    #map { height: 300px; margin-top: 20px; }
+    #channelCanvas { border: 1px solid #ccc; margin-top: 20px; background: #f4f4f4; }
+    .safe { color: green; }
+    .alert { color: orange; }
+    .risk { color: red; }
+    .hidden { display: none; }
+  </style>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+</head>
+<body>
+  <h2>🌊 Flood Prediction System</h2>
+
+  <form id="floodForm">
+    <label>Location:
+      <select id="city">
+        <option value="Johor Bahru">Johor Bahru</option>
+        <option value="Kuala Lumpur">Kuala Lumpur</option>
+        <option value="Penang">Penang</option>
+        <option value="Kota Kinabalu">Kota Kinabalu</option>
+        <option value="Kuching">Kuching</option>
+      </select>
+    </label><br><br>
+
+    <label>Channel Type:
+      <select id="type" required>
+        <option value="">-- Select --</option>
+        <option value="1">Rectangular</option>
+        <option value="2">Trapezoidal</option>
+      </select>
+    </label><br><br>
+
+    <div id="rectangularInputs" class="hidden">
+      <label>Width (m): <input type="number" step="0.0001" id="rectWidth"></label><br><br>
+<label>Height (m): <input type="number" step="0.0001" id="rectHeight"></label><br><br>
+<label>Freeboard (m): <input type="number" step="0.0001" id="rectFree" value="0.3"></label><br><br>
+    </div>
+
+    <div id="trapezoidalInputs" class="hidden">
+      <label>Bottom Width (m): <input type="number" step="0.0001" id="trapWidth"></label><br><br>
+<label>Height (m): <input type="number" step="0.0001" id="trapHeight"></label><br><br>
+<label>Side Slope (z): <input type="number" step="0.0001" id="trapSlope"></label><br><br>
+<label>Freeboard (m): <input type="number" step="0.0001" id="trapFree" value="0.3"></label><br><br>
+
+    </div>
+
+    <label>Manning's n: <input type="number" step="0.0001" id="n" required></label><br><br>
+<label>Channel Slope (s0): <input type="number" step="0.0001" id="s0" required></label><br><br>
+<label>Catchment Area (ha): <input type="number" step="0.0001" id="area" required></label><br><br>
+<label>Runoff Coefficient (c): <input type="number" step="0.0001" id="c" required></label><br><br>
+
+    <button type="submit">Calculate Flood Risk</button>
+  </form>
+
+  <h3 id="status"></h3>
+  <p id="dischargeResult"></p>
+  <canvas id="channelCanvas" width="600" height="300"></canvas>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    const canvas = document.getElementById("channelCanvas");
+    const ctx = canvas.getContext("2d");
+
+    document.getElementById('type').addEventListener('change', function () {
+      const type = parseInt(this.value);
+      document.getElementById('rectangularInputs').classList.toggle('hidden', type !== 1);
+      document.getElementById('trapezoidalInputs').classList.toggle('hidden', type !== 2);
+    });
+
+// === City coordinates lookup ===
+const cityCoordinates = {
+  "Johor Bahru": [1.4927, 103.7414],
+  "Kuala Lumpur": [3.1390, 101.6869],
+  "Penang": [5.4164, 100.3327],
+  "Kota Kinabalu": [5.9804, 116.0735],
+  "Kuching": [1.5533, 110.3592]
+};
+
+    document.getElementById('floodForm').addEventListener('submit', async function (e) {
+      e.preventDefault();
+
+      const type = parseInt(document.getElementById('type').value);
+      const n = parseFloat(document.getElementById('n').value);
+      const s0 = parseFloat(document.getElementById('s0').value);
+      const area = parseFloat(document.getElementById('area').value);
+      const c = parseFloat(document.getElementById('c').value);
+      const city = document.getElementById('city').value;
+
+      // API: Fetch rainfall
+      const apiKey = '229b07e2b5d243bb80283842251405';
+      let rainfall = 0;
+
+      try {
+        const res = await fetch(`https://api.weatherapi.com/v1/current.json?key=${apiKey}&q=${city}`);
+        const data = await res.json();
+        rainfall = data.current.precip_mm;
+      } catch {
+        alert("❌ Unable to fetch weather data.");
+        return;
+      }
+
+      const q = c * area * rainfall;
+      let Q = 0, ratio = 0;
+      let statusText = '', className = '';
+
+      // === DRAWING SETUP ===
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const canvasWidth = canvas.width;
+      const canvasHeight = canvas.height;
+      const scale = 40;
+      const offsetX = canvasWidth / 2;
+      const baseY = canvasHeight - 20;
+
+      const getX = dx => offsetX + dx * scale;
+      const getY = dy => baseY - dy * scale;
+
+      // === DRAWING CHANNEL ===
+      if (type === 2) {
+        const w = parseFloat(document.getElementById('trapWidth').value);
+        const h = parseFloat(document.getElementById('trapHeight').value);
+        const z = parseFloat(document.getElementById('trapSlope').value);
+        const f = parseFloat(document.getElementById('trapFree').value);
+
+        const A = w * h + h * h * z;
+        const P = w + 2 * h * Math.sqrt(1 + z * z);
+        const R = A / P;
+        Q = (1 / n) * A * Math.pow(R, 2 / 3) * Math.sqrt(s0);
+        ratio = q / Q;
+
+        const topWater = w + 2 * z * h;
+        const topWall = w + 2 * z * (h + f);
+
+        // Outer wall
+        ctx.beginPath();
+        ctx.moveTo(getX(-topWall / 2), getY(h + f));
+        ctx.lineTo(getX(-w / 2), getY(0));
+        ctx.lineTo(getX(w / 2), getY(0));
+        ctx.lineTo(getX(topWall / 2), getY(h + f));
+        ctx.closePath();
+        ctx.fillStyle = "#ccc";
+        ctx.fill();
+
+        // Water fill
+        ctx.beginPath();
+        ctx.moveTo(getX(-topWater / 2), getY(h));
+        ctx.lineTo(getX(-w / 2), getY(0));
+        ctx.lineTo(getX(w / 2), getY(0));
+        ctx.lineTo(getX(topWater / 2), getY(h));
+        ctx.closePath();
+        ctx.fillStyle = "magenta";
+        ctx.fill();
+
+        // 💧Downward triangle on water surface
+       const arrowX = getX(0);
+const arrowY = getY(h); // slightly above surface
+ctx.beginPath();
+ctx.moveTo(arrowX, arrowY);
+ctx.lineTo(arrowX - 5, arrowY - 10);
+ctx.lineTo(arrowX + 5, arrowY - 10);
+ctx.closePath();
+ctx.fillStyle = "blue";
+ctx.fill();
+
+        // Labels
+        ctx.fillStyle = "black";
+        ctx.font = "14px sans-serif";
+        ctx.fillText("Trapezoidal Channel", 10, 20);
+        ctx.fillText(`Height = ${h} m`, getX(w/2) + 10, getY(h/2));
+        ctx.fillText(`Top Width ≈ ${topWall.toFixed(2)} m`, getX(-topWall/2), getY(h+f+0.5));
+
+      } else if (type === 1) {
+        const w = parseFloat(document.getElementById('rectWidth').value);
+        const h = parseFloat(document.getElementById('rectHeight').value);
+        const f = parseFloat(document.getElementById('rectFree').value);
+
+        const A = w * h;
+        const P = w + 2 * h;
+        const R = A / P;
+        Q = (1 / n) * A * Math.pow(R, 2 / 3) * Math.sqrt(s0);
+        ratio = q / Q;
+
+        ctx.fillStyle = "#ccc";
+        ctx.fillRect(getX(-w/2), getY(h + f), w * scale, (h + f) * scale);
+
+        ctx.fillStyle = "cyan";
+        ctx.fillRect(getX(-w/2), getY(h), w * scale, h * scale);
+
+        // 💧 Downward triangle ABOVE water surface
+const arrowX = getX(0);
+const arrowY = getY(h) ; // move 5px above water surface
+ctx.beginPath();
+ctx.moveTo(arrowX, arrowY);
+ctx.lineTo(arrowX - 5, arrowY - 10);
+ctx.lineTo(arrowX + 5, arrowY - 10);
+ctx.closePath();
+ctx.fillStyle = "blue";
+ctx.fill();
+
+        // Labels
+        ctx.fillStyle = "black";
+        ctx.fillText("Rectangular Channel", 10, 20);
+        ctx.fillText(`Width = ${w} m`, getX(-w/2), getY(h + f + 0.5));
+        ctx.fillText(`Height = ${h} m`, getX(w/2) + 10, getY(h/2));
+      }
+
+      // === Discharge Display ===
+      document.getElementById("dischargeResult").innerHTML = 
+        `🚰 <strong>Channel Capacity (Q)</strong>: ${Q.toFixed(2)} m³/s<br>🌧️ <strong>Rainfall Discharge (q)</strong>: ${q.toFixed(2)} m³/s`;
+
+      // === Status and Map ===
+      const statusElem = document.getElementById("status");
+
+      if (ratio < 0.7) {
+        statusElem.textContent = "✅ Safe";
+        statusElem.className = "safe";
+      } else if (ratio <= 1) {
+        statusElem.textContent = "⚠️ Alert";
+        statusElem.className = "alert";
+      } else {
+        statusElem.textContent = "🚨 Flood Risk";
+        statusElem.className = "risk";
+        alert("⚠️ Flood risk detected!");
+      }
+
+      
+// === Map marker color logic based on status
+let markerColor = "gray";
+if (statusElem.className === "safe") markerColor = "green";
+else if (statusElem.className === "alert") markerColor = "orange";
+else if (statusElem.className === "risk") markerColor = "red";
+
+// === Update map
+const [lat, lon] = cityCoordinates[city] || [1.5584, 103.6386];
+const map = L.map('map').setView([lat, lon], 14);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+L.circleMarker([lat, lon], {
+  color: markerColor,
+  fillColor: markerColor,
+  fillOpacity: 0.9,
+  radius: 10
+}).addTo(map).bindPopup(`${city}: ${statusElem.textContent}`).openPopup();    });
+  </script>
+</body>
+</html>
